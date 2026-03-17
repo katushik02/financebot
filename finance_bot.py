@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
     ADDING_INCOME,
     ADDING_MANDATORY,
     ADDING_OPTIONAL,
-    AWAITING_CONFIRMATION,
-) = range(5)
+) = range(4)  # Убрал лишнее состояние
 
 # Токен вашего бота (получите у @BotFather)
 TOKEN = "8772555387:AAGY9e_slmhwfd--eSnuiAN6JuDrrBvtPHg"
@@ -33,60 +32,75 @@ TOKEN = "8772555387:AAGY9e_slmhwfd--eSnuiAN6JuDrrBvtPHg"
 # --- Работа с базой данных ---
 def init_db():
     """Создаёт таблицы в базе данных, если их нет."""
-    conn = sqlite3.connect('finance_bot.db')
-    cursor = conn.cursor()
-    # Таблица для транзакций
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            type TEXT,  -- 'income', 'mandatory', 'optional'
-            amount REAL,
-            description TEXT,
-            date TEXT
-        )
-    ''')
-    # Таблица для месячного бюджета/лимитов (опционально)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS monthly_budget (
-            user_id INTEGER PRIMARY KEY,
-            month TEXT,
-            mandatory_limit REAL DEFAULT 0,
-            optional_limit REAL DEFAULT 0
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('finance_bot.db')
+        cursor = conn.cursor()
+        # Таблица для транзакций
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                type TEXT,  -- 'income', 'mandatory', 'optional'
+                amount REAL,
+                description TEXT,
+                date TEXT
+            )
+        ''')
+        # Таблица для месячного бюджета/лимитов (опционально)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS monthly_budget (
+                user_id INTEGER PRIMARY KEY,
+                month TEXT,
+                mandatory_limit REAL DEFAULT 0,
+                optional_limit REAL DEFAULT 0
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        logger.info("База данных успешно инициализирована")
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации БД: {e}")
 
 def add_transaction(user_id, trans_type, amount, description):
     """Добавляет запись о транзакции в БД."""
-    conn = sqlite3.connect('finance_bot.db')
-    cursor = conn.cursor()
-    date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute('''
-        INSERT INTO transactions (user_id, type, amount, description, date)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, trans_type, amount, description, date))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('finance_bot.db')
+        cursor = conn.cursor()
+        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO transactions (user_id, type, amount, description, date)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, trans_type, amount, description, date))
+        conn.commit()
+        conn.close()
+        logger.info(f"Транзакция добавлена: {user_id}, {trans_type}, {amount}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении транзакции: {e}")
+        return False
 
 def get_monthly_summary(user_id):
     """Возвращает сводку за текущий месяц."""
-    conn = sqlite3.connect('finance_bot.db')
-    cursor = conn.cursor()
-    current_month = datetime.now().strftime("%Y-%m")
-    cursor.execute('''
-        SELECT type, SUM(amount) FROM transactions
-        WHERE user_id = ? AND strftime('%Y-%m', date) = ?
-        GROUP BY type
-    ''', (user_id, current_month))
-    rows = cursor.fetchall()
-    conn.close()
-    
-    summary = {'income': 0, 'mandatory': 0, 'optional': 0}
-    for row in rows:
-        summary[row[0]] = row[1]
-    return summary
+    try:
+        conn = sqlite3.connect('finance_bot.db')
+        cursor = conn.cursor()
+        current_month = datetime.now().strftime("%Y-%m")
+        cursor.execute('''
+            SELECT type, SUM(amount) FROM transactions
+            WHERE user_id = ? AND strftime('%Y-%m', date) = ?
+            GROUP BY type
+        ''', (user_id, current_month))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        summary = {'income': 0, 'mandatory': 0, 'optional': 0}
+        for row in rows:
+            if row[0] in summary:
+                summary[row[0]] = row[1] if row[1] else 0
+        return summary
+    except Exception as e:
+        logger.error(f"Ошибка при получении сводки: {e}")
+        return {'income': 0, 'mandatory': 0, 'optional': 0}
 
 # --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -116,7 +130,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if query.data == 'add_income':
         await query.edit_message_text(
-            text="Введите сумму дохода (можно добавить комментарий через пробел):"
+            text="Введите сумму дохода (можно добавить комментарий через пробел):\n"
+                 "Пример: 50000 зарплата"
         )
         return ADDING_INCOME
         
@@ -134,12 +149,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
     elif query.data == 'show_summary':
         await show_summary(update, context)
-        # Возвращаемся в главное меню
-        await query.message.reply_text(
-            "Выберите следующее действие:",
-            reply_markup=main_menu_keyboard()
-        )
-        return CHOOSING_ACTION
+        return CHOOSING_ACTION  # Возвращаемся в меню
         
     elif query.data == 'back_to_menu':
         await query.edit_message_text(
@@ -157,13 +167,17 @@ async def add_income(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         description = parts[1] if len(parts) > 1 else "Без описания"
         
         user_id = update.effective_user.id
-        add_transaction(user_id, 'income', amount, description)
-        
-        await update.message.reply_text(
-            f"✅ Доход {amount} руб. добавлен!\n"
-            f"Описание: {description}",
-            reply_markup=main_menu_keyboard()
-        )
+        if add_transaction(user_id, 'income', amount, description):
+            await update.message.reply_text(
+                f"✅ Доход {amount} руб. добавлен!\n"
+                f"Описание: {description}",
+                reply_markup=main_menu_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Ошибка при сохранении в базу данных. Попробуйте еще раз.",
+                reply_markup=main_menu_keyboard()
+            )
         return CHOOSING_ACTION
     except ValueError:
         await update.message.reply_text(
@@ -182,13 +196,17 @@ async def add_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         description = parts[1] if len(parts) > 1 else "Без описания"
         
         user_id = update.effective_user.id
-        add_transaction(user_id, 'mandatory', amount, description)
-        
-        await update.message.reply_text(
-            f"✅ Обязательный расход {amount} руб. добавлен!\n"
-            f"Описание: {description}",
-            reply_markup=main_menu_keyboard()
-        )
+        if add_transaction(user_id, 'mandatory', amount, description):
+            await update.message.reply_text(
+                f"✅ Обязательный расход {amount} руб. добавлен!\n"
+                f"Описание: {description}",
+                reply_markup=main_menu_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Ошибка при сохранении в базу данных. Попробуйте еще раз.",
+                reply_markup=main_menu_keyboard()
+            )
         return CHOOSING_ACTION
     except ValueError:
         await update.message.reply_text(
@@ -207,13 +225,17 @@ async def add_optional(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         description = parts[1] if len(parts) > 1 else "Без описания"
         
         user_id = update.effective_user.id
-        add_transaction(user_id, 'optional', amount, description)
-        
-        await update.message.reply_text(
-            f"✅ Необязательный расход {amount} руб. добавлен!\n"
-            f"Описание: {description}",
-            reply_markup=main_menu_keyboard()
-        )
+        if add_transaction(user_id, 'optional', amount, description):
+            await update.message.reply_text(
+                f"✅ Необязательный расход {amount} руб. добавлен!\n"
+                f"Описание: {description}",
+                reply_markup=main_menu_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Ошибка при сохранении в базу данных. Попробуйте еще раз.",
+                reply_markup=main_menu_keyboard()
+            )
         return CHOOSING_ACTION
     except ValueError:
         await update.message.reply_text(
@@ -281,6 +303,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок."""
+    logger.error(f"Ошибка: {context.error}")
+
 def main():
     """Запуск бота."""
     # Инициализация БД
@@ -289,25 +315,31 @@ def main():
     # Создание приложения
     application = Application.builder().token(TOKEN).build()
     
+    # Добавляем обработчик ошибок
+    application.add_error_handler(error_handler)
+    
     # Обработчик диалога
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             CHOOSING_ACTION: [
-                CallbackQueryHandler(button_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, start),  # На случай текста
+                CallbackQueryHandler(button_handler, pattern='^(add_income|add_mandatory|add_optional|show_summary|back_to_menu)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, start),
             ],
             ADDING_INCOME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_income),
                 CommandHandler('cancel', cancel),
+                CallbackQueryHandler(button_handler),  # Добавляем обработку кнопок
             ],
             ADDING_MANDATORY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_mandatory),
                 CommandHandler('cancel', cancel),
+                CallbackQueryHandler(button_handler),  # Добавляем обработку кнопок
             ],
             ADDING_OPTIONAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_optional),
                 CommandHandler('cancel', cancel),
+                CallbackQueryHandler(button_handler),  # Добавляем обработку кнопок
             ],
         },
         fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)],
@@ -318,6 +350,7 @@ def main():
     
     # Запуск бота
     print("Бот запущен...")
+    print(f"Используется токен: {TOKEN[:10]}...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
