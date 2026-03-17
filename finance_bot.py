@@ -1,357 +1,119 @@
-import logging
-import sqlite3
+# -*- coding: utf-8 -*-
+import telebot
+import time
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-    ContextTypes,
-)
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ВСТАВЬТЕ СВОЙ ТОКЕН
+TOKEN = "8772555387:AAHxQ6kzK7vR2mN9pL4sW8yT3fG5jH2dK1"  # ваш токен
 
-# Состояния для разговоров (ConversationHandler)
-(
-    CHOOSING_ACTION,
-    ADDING_INCOME,
-    ADDING_MANDATORY,
-    ADDING_OPTIONAL,
-) = range(4)  # Убрал лишнее состояние
+print("🔄 Подключаюсь к Telegram...")
 
-# Токен вашего бота (получите у @BotFather)
-TOKEN = "8772555387:AAGY9e_slmhwfd--eSnuiAN6JuDrrBvtPHg"
+# Создаем бота с увеличенным таймаутом
+bot = telebot.TeleBot(TOKEN)
 
-# --- Работа с базой данных ---
-def init_db():
-    """Создаёт таблицы в базе данных, если их нет."""
+# Проверка соединения
+try:
+    me = bot.get_me()
+    print(f"✅ Бот @{me.username} успешно подключен!")
+except Exception as e:
+    print(f"❌ Ошибка подключения: {e}")
+    print("\n🔧 ЧТО ДЕЛАТЬ:")
+    print("1. Проверьте интернет (откройте сайт в браузере)")
+    print("2. Отключите VPN/прокси если есть")
+    print("3. Попробуйте перезагрузить роутер")
+    print("4. Проверьте брандмауэр Windows")
+    exit()
+
+# Хранилище данных
+user_data = {}
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, 
+        "💰 БОТ РАБОТАЕТ!\n\n"
+        "Команды:\n"
+        "/income 50000 зарплата\n"
+        "/need 15000 аренда\n"
+        "/want 2000 кино\n"
+        "/stats - итоги")
+
+@bot.message_handler(commands=['income'])
+def add_income(message):
     try:
-        conn = sqlite3.connect('finance_bot.db')
-        cursor = conn.cursor()
-        # Таблица для транзакций
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                type TEXT,  -- 'income', 'mandatory', 'optional'
-                amount REAL,
-                description TEXT,
-                date TEXT
-            )
-        ''')
-        # Таблица для месячного бюджета/лимитов (опционально)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS monthly_budget (
-                user_id INTEGER PRIMARY KEY,
-                month TEXT,
-                mandatory_limit REAL DEFAULT 0,
-                optional_limit REAL DEFAULT 0
-            )
-        ''')
-        conn.commit()
-        conn.close()
-        logger.info("База данных успешно инициализирована")
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации БД: {e}")
+        parts = message.text.split()
+        amount = float(parts[1])
+        desc = ' '.join(parts[2:]) if len(parts) > 2 else "доход"
+        
+        user_id = message.from_user.id
+        if user_id not in user_data:
+            user_data[user_id] = {'income': 0, 'need': 0, 'want': 0}
+        
+        user_data[user_id]['income'] += amount
+        bot.reply_to(message, f"✅ Доход {amount}₽")
+    except:
+        bot.reply_to(message, "❌ Пример: /income 50000 зарплата")
 
-def add_transaction(user_id, trans_type, amount, description):
-    """Добавляет запись о транзакции в БД."""
+@bot.message_handler(commands=['need'])
+def add_need(message):
     try:
-        conn = sqlite3.connect('finance_bot.db')
-        cursor = conn.cursor()
-        date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute('''
-            INSERT INTO transactions (user_id, type, amount, description, date)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, trans_type, amount, description, date))
-        conn.commit()
-        conn.close()
-        logger.info(f"Транзакция добавлена: {user_id}, {trans_type}, {amount}")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при добавлении транзакции: {e}")
-        return False
+        parts = message.text.split()
+        amount = float(parts[1])
+        
+        user_id = message.from_user.id
+        if user_id not in user_data:
+            user_data[user_id] = {'income': 0, 'need': 0, 'want': 0}
+        
+        user_data[user_id]['need'] += amount
+        bot.reply_to(message, f"✅ Обязательный {amount}₽")
+    except:
+        bot.reply_to(message, "❌ Пример: /need 15000 аренда")
 
-def get_monthly_summary(user_id):
-    """Возвращает сводку за текущий месяц."""
+@bot.message_handler(commands=['want'])
+def add_want(message):
     try:
-        conn = sqlite3.connect('finance_bot.db')
-        cursor = conn.cursor()
-        current_month = datetime.now().strftime("%Y-%m")
-        cursor.execute('''
-            SELECT type, SUM(amount) FROM transactions
-            WHERE user_id = ? AND strftime('%Y-%m', date) = ?
-            GROUP BY type
-        ''', (user_id, current_month))
-        rows = cursor.fetchall()
-        conn.close()
+        parts = message.text.split()
+        amount = float(parts[1])
         
-        summary = {'income': 0, 'mandatory': 0, 'optional': 0}
-        for row in rows:
-            if row[0] in summary:
-                summary[row[0]] = row[1] if row[1] else 0
-        return summary
-    except Exception as e:
-        logger.error(f"Ошибка при получении сводки: {e}")
-        return {'income': 0, 'mandatory': 0, 'optional': 0}
-
-# --- Обработчики команд ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Приветственное сообщение и главное меню."""
-    await update.message.reply_text(
-        "👋 Привет! Я бот для учёта расходов и доходов.\n"
-        "Я помогу тебе разделять обязательные и необязательные траты.\n"
-        "Выбери действие:",
-        reply_markup=main_menu_keyboard()
-    )
-    return CHOOSING_ACTION
-
-def main_menu_keyboard():
-    """Клавиатура главного меню."""
-    keyboard = [
-        [InlineKeyboardButton("➕ Доход", callback_data='add_income')],
-        [InlineKeyboardButton("💰 Обязательный расход", callback_data='add_mandatory')],
-        [InlineKeyboardButton("🍕 Необязательный расход", callback_data='add_optional')],
-        [InlineKeyboardButton("📊 Итоги за месяц", callback_data='show_summary')],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает нажатия на кнопки меню."""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == 'add_income':
-        await query.edit_message_text(
-            text="Введите сумму дохода (можно добавить комментарий через пробел):\n"
-                 "Пример: 50000 зарплата"
-        )
-        return ADDING_INCOME
+        user_id = message.from_user.id
+        if user_id not in user_data:
+            user_data[user_id] = {'income': 0, 'need': 0, 'want': 0}
         
-    elif query.data == 'add_mandatory':
-        await query.edit_message_text(
-            text="Введите сумму обязательного расхода (например: 15000 аренда):"
-        )
-        return ADDING_MANDATORY
-        
-    elif query.data == 'add_optional':
-        await query.edit_message_text(
-            text="Введите сумму необязательного расхода (например: 1000 кино):"
-        )
-        return ADDING_OPTIONAL
-        
-    elif query.data == 'show_summary':
-        await show_summary(update, context)
-        return CHOOSING_ACTION  # Возвращаемся в меню
-        
-    elif query.data == 'back_to_menu':
-        await query.edit_message_text(
-            text="Главное меню:",
-            reply_markup=main_menu_keyboard()
-        )
-        return CHOOSING_ACTION
+        user_data[user_id]['want'] += amount
+        bot.reply_to(message, f"✅ Необязательный {amount}₽")
+    except:
+        bot.reply_to(message, "❌ Пример: /want 2000 кино")
 
-async def add_income(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает ввод дохода."""
-    text = update.message.text
-    try:
-        parts = text.split(maxsplit=1)
-        amount = float(parts[0].replace(',', '.'))
-        description = parts[1] if len(parts) > 1 else "Без описания"
-        
-        user_id = update.effective_user.id
-        if add_transaction(user_id, 'income', amount, description):
-            await update.message.reply_text(
-                f"✅ Доход {amount} руб. добавлен!\n"
-                f"Описание: {description}",
-                reply_markup=main_menu_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Ошибка при сохранении в базу данных. Попробуйте еще раз.",
-                reply_markup=main_menu_keyboard()
-            )
-        return CHOOSING_ACTION
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Ошибка! Введите число (сумму) и, если хотите, комментарий.\n"
-            "Пример: 50000 зарплата",
-            reply_markup=main_menu_keyboard()
-        )
-        return CHOOSING_ACTION
+@bot.message_handler(commands=['stats'])
+def stats(message):
+    user_id = message.from_user.id
+    if user_id not in user_data:
+        bot.reply_to(message, "Нет данных. Добавьте /income")
+        return
+    
+    data = user_data[user_id]
+    income = data['income']
+    need = data['need']
+    want = data['want']
+    balance = income - (need + want)
+    
+    msg = f"""
+📊 ИТОГИ:
+💰 Доход: {income}₽
+🔴 Обязательные: {need}₽
+🟡 Необязательные: {want}₽
+⚖️ Остаток: {balance}₽
+"""
+    bot.reply_to(message, msg)
 
-async def add_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает ввод обязательного расхода."""
-    text = update.message.text
-    try:
-        parts = text.split(maxsplit=1)
-        amount = float(parts[0].replace(',', '.'))
-        description = parts[1] if len(parts) > 1 else "Без описания"
-        
-        user_id = update.effective_user.id
-        if add_transaction(user_id, 'mandatory', amount, description):
-            await update.message.reply_text(
-                f"✅ Обязательный расход {amount} руб. добавлен!\n"
-                f"Описание: {description}",
-                reply_markup=main_menu_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Ошибка при сохранении в базу данных. Попробуйте еще раз.",
-                reply_markup=main_menu_keyboard()
-            )
-        return CHOOSING_ACTION
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Ошибка! Введите число и комментарий.\n"
-            "Пример: 15000 аренда",
-            reply_markup=main_menu_keyboard()
-        )
-        return CHOOSING_ACTION
+print("\n✅ Бот запущен и ждет команды!")
+print("📱 Идите в Telegram и напишите /start")
+print("\n❌ Если бот не отвечает, проверьте интернет")
+print("💡 Для остановки нажмите Ctrl+C")
 
-async def add_optional(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает ввод необязательного расхода."""
-    text = update.message.text
-    try:
-        parts = text.split(maxsplit=1)
-        amount = float(parts[0].replace(',', '.'))
-        description = parts[1] if len(parts) > 1 else "Без описания"
-        
-        user_id = update.effective_user.id
-        if add_transaction(user_id, 'optional', amount, description):
-            await update.message.reply_text(
-                f"✅ Необязательный расход {amount} руб. добавлен!\n"
-                f"Описание: {description}",
-                reply_markup=main_menu_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Ошибка при сохранении в базу данных. Попробуйте еще раз.",
-                reply_markup=main_menu_keyboard()
-            )
-        return CHOOSING_ACTION
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Ошибка! Введите число и комментарий.\n"
-            "Пример: 1000 кино",
-            reply_markup=main_menu_keyboard()
-        )
-        return CHOOSING_ACTION
-
-async def show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает сводку за текущий месяц."""
-    query = update.callback_query
-    user_id = update.effective_user.id
-    summary = get_monthly_summary(user_id)
-    
-    income = summary['income']
-    mandatory = summary['mandatory']
-    optional = summary['optional']
-    total_expenses = mandatory + optional
-    balance = income - total_expenses
-    
-    message = (
-        f"📊 *Финансовый отчёт за текущий месяц*\n\n"
-        f"💰 *Доходы:* {income:.2f} руб.\n"
-        f"🔴 *Обязательные расходы:* {mandatory:.2f} руб.\n"
-        f"🟡 *Необязательные расходы:* {optional:.2f} руб.\n"
-        f"💸 *Всего расходов:* {total_expenses:.2f} руб.\n"
-        f"⚖️ *Баланс:* {balance:.2f} руб.\n"
-    )
-    
-    if balance > 0:
-        message += f"✅ Можно отложить {balance:.2f} руб. или потратить на развлечения!"
-    elif balance < 0:
-        message += f"⚠️ Превышение бюджета на {abs(balance):.2f} руб. Пора экономить!"
-    else:
-        message += "⚖️ Идеальный баланс: доходы равны расходам."
-    
-    await query.edit_message_text(
-        text=message,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ В главное меню", callback_data='back_to_menu')]
-        ])
-    )
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отмена и возврат в меню."""
-    await update.message.reply_text(
-        "Действие отменено. Возвращаюсь в меню.",
-        reply_markup=main_menu_keyboard()
-    )
-    return CHOOSING_ACTION
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Справка по командам."""
-    await update.message.reply_text(
-        "📚 *Команды бота:*\n\n"
-        "/start - Запустить бота и открыть меню\n"
-        "/help - Показать эту справку\n"
-        "/cancel - Отменить текущее действие\n\n"
-        "*Как пользоваться:*\n"
-        "1️⃣ Добавляйте доходы и расходы через меню\n"
-        "2️⃣ Расходы делятся на обязательные (кварплата, кредиты) и необязательные (развлечения)\n"
-        "3️⃣ Смотрите статистику за месяц, чтобы планировать бюджет",
-        parse_mode='Markdown'
-    )
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок."""
-    logger.error(f"Ошибка: {context.error}")
-
-def main():
-    """Запуск бота."""
-    # Инициализация БД
-    init_db()
-    
-    # Создание приложения
-    application = Application.builder().token(TOKEN).build()
-    
-    # Добавляем обработчик ошибок
-    application.add_error_handler(error_handler)
-    
-    # Обработчик диалога
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            CHOOSING_ACTION: [
-                CallbackQueryHandler(button_handler, pattern='^(add_income|add_mandatory|add_optional|show_summary|back_to_menu)$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, start),
-            ],
-            ADDING_INCOME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_income),
-                CommandHandler('cancel', cancel),
-                CallbackQueryHandler(button_handler),  # Добавляем обработку кнопок
-            ],
-            ADDING_MANDATORY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_mandatory),
-                CommandHandler('cancel', cancel),
-                CallbackQueryHandler(button_handler),  # Добавляем обработку кнопок
-            ],
-            ADDING_OPTIONAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_optional),
-                CommandHandler('cancel', cancel),
-                CallbackQueryHandler(button_handler),  # Добавляем обработку кнопок
-            ],
-        },
-        fallbacks=[CommandHandler('cancel', cancel), CommandHandler('start', start)],
-    )
-    
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('help', help_command))
-    
-    # Запуск бота
-    print("Бот запущен...")
-    print(f"Используется токен: {TOKEN[:10]}...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
+try:
+    bot.polling(none_stop=True, interval=0, timeout=20)
+except Exception as e:
+    print(f"\n❌ Ошибка: {e}")
+    print("\n🔄 Пробуем переподключиться через 5 секунд...")
+    time.sleep(5)
+    bot.polling(none_stop=True, interval=0, timeout=20)
